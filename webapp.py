@@ -484,7 +484,7 @@ def render_community_explorer(data, mapping_df, summary_df, track_growth_df, tra
                 column_config={
                     'Plays': st.column_config.NumberColumn(
                         'Plays',
-                        format='%d'
+                        format=',.0f'
                     )
                 }
             )
@@ -519,11 +519,11 @@ def render_community_explorer(data, mapping_df, summary_df, track_growth_df, tra
                 column_config={
                     'Followers': st.column_config.NumberColumn(
                         'Followers',
-                        format='%d'
+                        format=',.0f'
                     ),
                     'Tracks from Community': st.column_config.NumberColumn(
                         'Tracks from Community',
-                        format='%d'
+                        format=',.0f'
                     ),
                     'Avg Growth %/24h': st.column_config.NumberColumn(
                         'Avg Growth %/24h',
@@ -583,7 +583,15 @@ def render_community_explorer(data, mapping_df, summary_df, track_growth_df, tra
                 ),
                 'Followers': st.column_config.NumberColumn(
                     'Followers',
-                    format='%d'
+                    format=',.0f'
+                ),
+                'Tracks from Community': st.column_config.NumberColumn(
+                    'Tracks from Community',
+                    format=',.0f'
+                ),
+                'Total Tracks': st.column_config.NumberColumn(
+                    'Total Tracks',
+                    format=',.0f'
                 )
             }
         )
