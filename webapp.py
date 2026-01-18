@@ -484,7 +484,7 @@ def render_community_explorer(data, mapping_df, summary_df, track_growth_df, tra
                 column_config={
                     'Plays': st.column_config.NumberColumn(
                         'Plays',
-                        format='%,d'
+                        format='%d'
                     )
                 }
             )
