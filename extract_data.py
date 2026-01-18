@@ -17,7 +17,7 @@ from datetime import datetime
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(SCRIPT_DIR, 'spotify.db')
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, 'analysis_results')
-MIN_STREAMS = 100000  # Minimum streams to be included
+MIN_STREAMS = 500000  # Minimum streams to be included
 MIN_GROWTH_PCT = 3.0  # Minimum growth % per 24h to be included
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)

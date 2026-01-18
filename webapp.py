@@ -41,6 +41,35 @@ st.markdown("""
         border-radius: 0.5rem;
         margin: 1rem 0;
     }
+    /* Right-align all dataframe content */
+    [data-testid="stDataFrame"] div[role="gridcell"],
+    [data-testid="stDataFrame"] div[role="columnheader"] {
+        text-align: right !important;
+    }
+    [data-testid="stDataFrame"] div[role="gridcell"] > div,
+    [data-testid="stDataFrame"] div[role="columnheader"] > div {
+        text-align: right !important;
+        justify-content: flex-end !important;
+        display: flex !important;
+    }
+    /* Keep first two columns left-aligned */
+    [data-testid="stDataFrame"] div[role="gridcell"]:nth-child(1),
+    [data-testid="stDataFrame"] div[role="gridcell"]:nth-child(2),
+    [data-testid="stDataFrame"] div[role="columnheader"]:nth-child(1),
+    [data-testid="stDataFrame"] div[role="columnheader"]:nth-child(2) {
+        text-align: left !important;
+    }
+    [data-testid="stDataFrame"] div[role="gridcell"]:nth-child(1) > div,
+    [data-testid="stDataFrame"] div[role="gridcell"]:nth-child(2) > div,
+    [data-testid="stDataFrame"] div[role="columnheader"]:nth-child(1) > div,
+    [data-testid="stDataFrame"] div[role="columnheader"]:nth-child(2) > div {
+        text-align: left !important;
+        justify-content: flex-start !important;
+    }
+    /* Use tabular numbers for better alignment */
+    [data-testid="stDataFrame"] {
+        font-variant-numeric: tabular-nums;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -476,17 +505,14 @@ def render_community_explorer(data, mapping_df, summary_df, track_growth_df, tra
                 ['track_name', 'artist_name', 'plays']
             ].drop_duplicates(subset=['track_name', 'artist_name']).head(10).copy()
             top_songs.columns = ['Track', 'Artist', 'Plays']
+            
+            # Format plays with thousand separators
+            top_songs['Plays'] = top_songs['Plays'].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
 
             st.dataframe(
                 top_songs,
                 hide_index=True,
-                width="stretch",
-                column_config={
-                    'Plays': st.column_config.NumberColumn(
-                        'Plays',
-                        format=',.0f'
-                    )
-                }
+                width="stretch"
             )
         else:
             st.info("No tracks with play counts in this community")
@@ -511,20 +537,16 @@ def render_community_explorer(data, mapping_df, summary_df, track_growth_df, tra
                 ['playlist_name', 'followers', 'tracks_from_community', 'avg_growth_pct', 'growth_percentile']
             ].copy()
             top_growing_playlists.columns = ['Playlist', 'Followers', 'Tracks from Community', 'Avg Growth %/24h', 'Growth Percentile']
+            
+            # Format integer columns with thousand separators
+            top_growing_playlists['Followers'] = top_growing_playlists['Followers'].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
+            top_growing_playlists['Tracks from Community'] = top_growing_playlists['Tracks from Community'].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
 
             st.dataframe(
                 top_growing_playlists,
                 hide_index=True,
                 width="stretch",
                 column_config={
-                    'Followers': st.column_config.NumberColumn(
-                        'Followers',
-                        format=',.0f'
-                    ),
-                    'Tracks from Community': st.column_config.NumberColumn(
-                        'Tracks from Community',
-                        format=',.0f'
-                    ),
                     'Avg Growth %/24h': st.column_config.NumberColumn(
                         'Avg Growth %/24h',
                         format='%.2f%%'
@@ -561,6 +583,11 @@ def render_community_explorer(data, mapping_df, summary_df, track_growth_df, tra
         display_playlists.columns = ['Playlist', 'Tracks from Community', 'Total Tracks', 'Overlap %',
                                      'Avg Growth %/24h', 'Growth Percentile', 'Followers']
         display_playlists['Playlist'] = display_playlists['Playlist'].str[:50]
+        
+        # Format integer columns with thousand separators
+        display_playlists['Followers'] = display_playlists['Followers'].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
+        display_playlists['Tracks from Community'] = display_playlists['Tracks from Community'].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
+        display_playlists['Total Tracks'] = display_playlists['Total Tracks'].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
 
         # Keep numeric for proper sorting
         st.dataframe(
@@ -580,18 +607,6 @@ def render_community_explorer(data, mapping_df, summary_df, track_growth_df, tra
                 'Growth Percentile': st.column_config.NumberColumn(
                     'Growth Percentile',
                     format='%.0f'
-                ),
-                'Followers': st.column_config.NumberColumn(
-                    'Followers',
-                    format=',.0f'
-                ),
-                'Tracks from Community': st.column_config.NumberColumn(
-                    'Tracks from Community',
-                    format=',.0f'
-                ),
-                'Total Tracks': st.column_config.NumberColumn(
-                    'Total Tracks',
-                    format=',.0f'
                 )
             }
         )
