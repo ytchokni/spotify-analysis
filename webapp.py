@@ -44,13 +44,42 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-RESULTS_DIR = 'analysis_results'
+# Get the directory where this script is located
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+RESULTS_DIR = os.path.join(SCRIPT_DIR, 'analysis_results')
 
 
 @st.cache_data
 def load_track_growth():
     """Load pre-computed track growth data."""
     filepath = os.path.join(RESULTS_DIR, 'track_growth_latest.csv')
+    if os.path.exists(filepath):
+        return pd.read_csv(filepath)
+    return pd.DataFrame()
+
+
+@st.cache_data
+def load_track_plays():
+    """Load pre-computed track play counts."""
+    filepath = os.path.join(RESULTS_DIR, 'track_plays_latest.csv')
+    if os.path.exists(filepath):
+        return pd.read_csv(filepath)
+    return pd.DataFrame()
+
+
+@st.cache_data
+def load_playlists():
+    """Load pre-computed playlists data."""
+    filepath = os.path.join(RESULTS_DIR, 'playlists_latest.csv')
+    if os.path.exists(filepath):
+        return pd.read_csv(filepath)
+    return pd.DataFrame()
+
+
+@st.cache_data
+def load_playlist_tracks():
+    """Load pre-computed playlist-track relationships."""
+    filepath = os.path.join(RESULTS_DIR, 'playlist_tracks_latest.csv')
     if os.path.exists(filepath):
         return pd.read_csv(filepath)
     return pd.DataFrame()
@@ -129,115 +158,73 @@ def merge_growth_with_mapping(_mapping_df, _track_growth_df):
     return mapping_df
 
 
-def get_artist_monthly_listeners(artist_ids):
-    """Get monthly listeners for a list of artists."""
-    import sqlite3
-
-    if not artist_ids:
-        return {}
-
-    conn = sqlite3.connect('spotify.db')
-    artist_ids_str = ','.join([f"'{aid}'" for aid in artist_ids])
-
-    query = f"""
-    SELECT id, monthly_listeners
-    FROM artists
-    WHERE id IN ({artist_ids_str})
-    """
-
-    try:
-        df = pd.read_sql_query(query, conn)
-        conn.close()
-        return dict(zip(df['id'], df['monthly_listeners']))
-    except Exception as e:
-        conn.close()
-        return {}
-
-
-def calculate_top_playlists_for_community(community_id, mapping_df, track_growth_df, analysis_type):
+def calculate_top_playlists_for_community(community_id, mapping_df, track_growth_df, playlists_df, playlist_tracks_df):
     """Calculate which playlists have the highest overlap with a given community.
 
-    Queries the database to find playlists containing tracks from this community,
+    Uses pre-loaded data to find playlists containing tracks from this community,
     and ranks them by overlap percentage. Also includes growth metrics.
     """
-    import sqlite3
-
     # Get track IDs in this community
     community_tracks = set(mapping_df[mapping_df['community_id'] == community_id]['track_id'])
 
     if len(community_tracks) == 0:
         return None
 
-    # Query database for playlists containing these tracks
-    conn = sqlite3.connect('spotify.db')
-
-    # Convert track IDs to SQL format
-    track_ids_str = ','.join([f"'{tid}'" for tid in community_tracks])
-
-    query = f"""
-    WITH community_playlists AS (
-        SELECT
-            p.id as playlist_id,
-            p.name as playlist_name,
-            p.total_tracks,
-            p.followers,
-            COUNT(DISTINCT pt.track_id) as tracks_from_community
-        FROM playlists p
-        JOIN playlist_tracks pt ON p.id = pt.playlist_id
-        WHERE pt.track_id IN ({track_ids_str})
-        GROUP BY p.id, p.name, p.total_tracks, p.followers
-        HAVING COUNT(DISTINCT pt.track_id) >= 2
-    )
-    SELECT
-        playlist_id,
-        playlist_name,
-        tracks_from_community,
-        total_tracks,
-        CAST(tracks_from_community AS FLOAT) / total_tracks * 100 as overlap_pct,
-        followers
-    FROM community_playlists
-    WHERE total_tracks >= 5 AND total_tracks <= 500
-    ORDER BY overlap_pct DESC, tracks_from_community DESC
-    LIMIT 20
-    """
-
-    try:
-        df = pd.read_sql_query(query, conn)
-
-        # Get all tracks in these playlists to calculate growth metrics
-        if len(df) > 0:
-            playlist_ids_str = ','.join([f"'{pid}'" for pid in df['playlist_id']])
-            tracks_query = f"""
-            SELECT playlist_id, track_id
-            FROM playlist_tracks
-            WHERE playlist_id IN ({playlist_ids_str})
-            """
-            playlist_tracks_df = pd.read_sql_query(tracks_query, conn)
-
-            # Merge with growth data
-            if len(track_growth_df) > 0:
-                playlist_tracks_df = playlist_tracks_df.merge(
-                    track_growth_df[['track_id', 'growth_pct_per_24h']],
-                    on='track_id',
-                    how='left'
-                )
-                playlist_tracks_df['growth_pct_per_24h'] = playlist_tracks_df['growth_pct_per_24h'].fillna(0)
-
-                # Calculate average growth per playlist
-                playlist_growth = playlist_tracks_df.groupby('playlist_id')['growth_pct_per_24h'].mean().reset_index()
-                playlist_growth.columns = ['playlist_id', 'avg_growth_pct']
-
-                df = df.merge(playlist_growth, on='playlist_id', how='left')
-                df['avg_growth_pct'] = df['avg_growth_pct'].fillna(0)
-            else:
-                df['avg_growth_pct'] = 0
-
-        conn.close()
-        return df
-    except Exception as e:
-        conn.close()
-        st.warning(f"Could not load playlist data: {e}")
+    if len(playlists_df) == 0 or len(playlist_tracks_df) == 0:
         return None
+
+    # Filter playlist_tracks to only tracks in this community
+    community_pt = playlist_tracks_df[playlist_tracks_df['track_id'].isin(community_tracks)]
+
+    # Count tracks from community per playlist
+    tracks_per_playlist = community_pt.groupby('playlist_id')['track_id'].nunique().reset_index()
+    tracks_per_playlist.columns = ['playlist_id', 'tracks_from_community']
+
+    # Filter to playlists with at least 2 tracks from community
+    tracks_per_playlist = tracks_per_playlist[tracks_per_playlist['tracks_from_community'] >= 2]
+
+    if len(tracks_per_playlist) == 0:
+        return None
+
+    # Merge with playlist info
+    df = tracks_per_playlist.merge(playlists_df, on='playlist_id', how='inner')
+
+    # Filter by total_tracks
+    df = df[(df['total_tracks'] >= 5) & (df['total_tracks'] <= 500)]
+
+    if len(df) == 0:
+        return None
+
+    # Calculate overlap percentage
+    df['overlap_pct'] = (df['tracks_from_community'] / df['total_tracks'] * 100)
+
+    # Sort and limit
+    df = df.sort_values(['overlap_pct', 'tracks_from_community'], ascending=[False, False]).head(20)
+
+    # Calculate average growth per playlist
+    if len(track_growth_df) > 0:
+        # Get all tracks in these playlists
+        result_playlist_ids = set(df['playlist_id'])
+        result_pt = playlist_tracks_df[playlist_tracks_df['playlist_id'].isin(result_playlist_ids)]
+
+        # Merge with growth data
+        result_pt = result_pt.merge(
+            track_growth_df[['track_id', 'growth_pct_per_24h']],
+            on='track_id',
+            how='left'
+        )
+        result_pt['growth_pct_per_24h'] = result_pt['growth_pct_per_24h'].fillna(0)
+
+        # Calculate average growth per playlist
+        playlist_growth = result_pt.groupby('playlist_id')['growth_pct_per_24h'].mean().reset_index()
+        playlist_growth.columns = ['playlist_id', 'avg_growth_pct']
+
+        df = df.merge(playlist_growth, on='playlist_id', how='left')
+        df['avg_growth_pct'] = df['avg_growth_pct'].fillna(0)
+    else:
+        df['avg_growth_pct'] = 0
+
+    return df
 
 
 def render_header():
@@ -341,7 +328,7 @@ def render_track_landscape(data, mapping_df, track_growth_df, analysis_type='tre
         st.metric("Avg Growth/24h", f"+{avg_growth:.2f}%")
 
 
-def render_community_explorer(data, mapping_df, summary_df, track_growth_df, analysis_type='trending'):
+def render_community_explorer(data, mapping_df, summary_df, track_growth_df, track_plays_df, playlists_df, playlist_tracks_df, analysis_type='trending'):
     """Render community explorer with track details and representative playlists."""
     st.header("🔍 Community Explorer")
 
@@ -437,26 +424,21 @@ def render_community_explorer(data, mapping_df, summary_df, track_growth_df, ana
     else:
         community_tracks['growth_percentile'] = 0
 
-    # Calculate top playlists by overlap with this community
-    top_playlists_df = calculate_top_playlists_for_community(community_id, mapping_df, track_growth_df, analysis_type)
+    # Calculate top playlists by overlap with this community (using pre-loaded data)
+    top_playlists_df = calculate_top_playlists_for_community(
+        community_id, mapping_df, track_growth_df, playlists_df, playlist_tracks_df
+    )
 
-    # Get playlist count for each track (total plays indicator)
-    import sqlite3
-    conn = sqlite3.connect('spotify.db')
-    track_ids_str = ','.join([f"'{tid}'" for tid in community_tracks['track_id'].unique()])
-    playlist_count_query = f"""
-    SELECT track_id, COUNT(DISTINCT playlist_id) as playlist_count
-    FROM playlist_tracks
-    WHERE track_id IN ({track_ids_str})
-    GROUP BY track_id
-    """
-    try:
-        playlist_counts = pd.read_sql_query(playlist_count_query, conn)
-        community_tracks = community_tracks.merge(playlist_counts, on='track_id', how='left')
-        community_tracks['playlist_count'] = community_tracks['playlist_count'].fillna(0)
-    except:
-        community_tracks['playlist_count'] = 0
-    conn.close()
+    # Get plays for community tracks from pre-loaded data
+    if len(track_plays_df) > 0:
+        community_tracks = community_tracks.merge(
+            track_plays_df[['track_id', 'plays']],
+            on='track_id',
+            how='left'
+        )
+        community_tracks['plays'] = community_tracks['plays'].fillna(0)
+    else:
+        community_tracks['plays'] = 0
 
     col1, col2 = st.columns(2)
 
@@ -489,25 +471,25 @@ def render_community_explorer(data, mapping_df, summary_df, track_growth_df, ana
 
     with col2:
         st.subheader("🎤 Top Songs by Absolute Plays")
-        if len(community_tracks) > 0 and 'track_name' in community_tracks.columns and 'artist_name' in community_tracks.columns:
-            top_songs = community_tracks.nlargest(10, 'playlist_count')[
-                ['track_name', 'artist_name', 'playlist_count']
+        if len(community_tracks) > 0 and 'track_name' in community_tracks.columns and 'artist_name' in community_tracks.columns and 'plays' in community_tracks.columns:
+            top_songs = community_tracks.nlargest(10, 'plays')[
+                ['track_name', 'artist_name', 'plays']
             ].drop_duplicates(subset=['track_name', 'artist_name']).head(10).copy()
-            top_songs.columns = ['Track', 'Artist', 'Plays (Playlist Count)']
+            top_songs.columns = ['Track', 'Artist', 'Plays']
 
             st.dataframe(
                 top_songs,
                 hide_index=True,
                 width="stretch",
                 column_config={
-                    'Plays (Playlist Count)': st.column_config.NumberColumn(
-                        'Plays (Playlist Count)',
-                        format='%d'
+                    'Plays': st.column_config.NumberColumn(
+                        'Plays',
+                        format='%,d'
                     )
                 }
             )
         else:
-            st.info("No tracks in this community")
+            st.info("No tracks with play counts in this community")
 
     st.markdown("---")
 
@@ -626,9 +608,18 @@ def main():
     data, mapping_df, summary_df = load_analysis_data(analysis_type)
     track_growth_df = load_track_growth()
 
+    # Load pre-calculated static data
+    track_plays_df = load_track_plays()
+    playlists_df = load_playlists()
+    playlist_tracks_df = load_playlist_tracks()
+
     if data is None:
         st.error(f"No analysis results found for '{analysis_type}' mode. Run `python genre_analysis.py` first.")
         return
+
+    # Check if pre-calculated data is available
+    if len(playlists_df) == 0 or len(playlist_tracks_df) == 0:
+        st.warning("Pre-calculated data not found. Run `python extract_data.py` first for best performance.")
 
     # Get counts from the analysis metadata
     metadata = data.get('metadata', {})
@@ -677,7 +668,7 @@ def main():
     if page == "Track Landscape":
         render_track_landscape(data, mapping_df, track_growth_df, analysis_type)
     elif page == "Community Explorer":
-        render_community_explorer(data, mapping_df, summary_df, track_growth_df, analysis_type)
+        render_community_explorer(data, mapping_df, summary_df, track_growth_df, track_plays_df, playlists_df, playlist_tracks_df, analysis_type)
 
 
 if __name__ == "__main__":

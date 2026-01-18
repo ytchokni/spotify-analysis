@@ -13,9 +13,12 @@ import numpy as np
 import os
 from datetime import datetime
 
-DB_PATH = 'spotify.db'
-OUTPUT_DIR = 'analysis_results'
+# Get the directory where this script is located
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(SCRIPT_DIR, 'spotify.db')
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, 'analysis_results')
 MIN_STREAMS = 100000  # Minimum streams to be included
+MIN_GROWTH_PCT = 3.0  # Minimum growth % per 24h to be included
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -113,6 +116,12 @@ def extract_track_growth():
         df = df.drop_duplicates(subset=['track_id'], keep='first')
 
     print(f"  Found {len(df):,} unique tracks with growth data (>= {MIN_STREAMS:,} streams)")
+    
+    # Filter to only tracks with significant growth
+    before_filter = len(df)
+    df = df[df['growth_pct_per_24h'] >= MIN_GROWTH_PCT]
+    print(f"  After filtering (>= {MIN_GROWTH_PCT}% growth): {len(df):,} tracks ({before_filter - len(df):,} removed)")
+    
     return df
 
 
@@ -190,6 +199,86 @@ def extract_playlist_growth():
     return df
 
 
+def extract_track_plays():
+    """Extract latest play counts for all tracks."""
+    print("Extracting track play counts...")
+    conn = sqlite3.connect(DB_PATH)
+
+    query = """
+    WITH latest_tracks AS (
+        SELECT
+            id,
+            name,
+            plays,
+            artist_id,
+            ROW_NUMBER() OVER(PARTITION BY id ORDER BY fetched_at DESC) as rn
+        FROM tracks
+        WHERE plays IS NOT NULL
+    )
+    SELECT
+        id as track_id,
+        name as track_name,
+        plays,
+        artist_id
+    FROM latest_tracks
+    WHERE rn = 1
+    """
+
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+
+    print(f"  Found {len(df):,} tracks with play counts")
+    return df
+
+
+def extract_playlists():
+    """Extract latest snapshot of all playlists."""
+    print("Extracting playlist data...")
+    conn = sqlite3.connect(DB_PATH)
+
+    query = """
+    WITH latest_playlists AS (
+        SELECT
+            id,
+            name,
+            total_tracks,
+            followers,
+            ROW_NUMBER() OVER(PARTITION BY id ORDER BY fetched_at DESC) as rn
+        FROM playlists
+    )
+    SELECT
+        id as playlist_id,
+        name as playlist_name,
+        total_tracks,
+        followers
+    FROM latest_playlists
+    WHERE rn = 1
+    """
+
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+
+    print(f"  Found {len(df):,} playlists")
+    return df
+
+
+def extract_playlist_tracks():
+    """Extract distinct playlist-track relationships."""
+    print("Extracting playlist-track relationships...")
+    conn = sqlite3.connect(DB_PATH)
+
+    query = """
+    SELECT DISTINCT playlist_id, track_id
+    FROM playlist_tracks
+    """
+
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+
+    print(f"  Found {len(df):,} playlist-track relationships")
+    return df
+
+
 def calculate_trending(track_growth_df, playlist_growth_df, percentile=90):
     """Mark top 10% as trending based on log ratio per 24h (internal), but keep % growth for display."""
     print(f"Calculating trending (top {100-percentile}% by log ratio)...")
@@ -226,13 +315,39 @@ def main():
     print(f"Database: {DB_PATH}")
     print(f"Output: {OUTPUT_DIR}/")
     print(f"Min streams filter: {MIN_STREAMS:,}")
+    print(f"Min growth filter: {MIN_GROWTH_PCT}%/24h")
     print()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # Extract growth data
+    # Extract growth data (already filtered by MIN_GROWTH_PCT)
     track_growth_df = extract_track_growth()
     playlist_growth_df = extract_playlist_growth()
+
+    # Get the set of track IDs that meet the growth threshold
+    growing_track_ids = set(track_growth_df['track_id'])
+    print(f"\nFiltering other data to {len(growing_track_ids):,} growing tracks...")
+
+    # Extract static data for webapp (no DB connection needed at runtime)
+    track_plays_df = extract_track_plays()
+    playlists_df = extract_playlists()
+    playlist_tracks_df = extract_playlist_tracks()
+
+    # Filter track_plays to only include growing tracks
+    before_plays = len(track_plays_df)
+    track_plays_df = track_plays_df[track_plays_df['track_id'].isin(growing_track_ids)]
+    print(f"  Track plays: {before_plays:,} -> {len(track_plays_df):,}")
+
+    # Filter playlist_tracks to only include growing tracks
+    before_pt = len(playlist_tracks_df)
+    playlist_tracks_df = playlist_tracks_df[playlist_tracks_df['track_id'].isin(growing_track_ids)]
+    print(f"  Playlist-tracks: {before_pt:,} -> {len(playlist_tracks_df):,}")
+
+    # Filter playlists to only those containing growing tracks
+    playlists_with_growing = set(playlist_tracks_df['playlist_id'])
+    before_playlists = len(playlists_df)
+    playlists_df = playlists_df[playlists_df['playlist_id'].isin(playlists_with_growing)]
+    print(f"  Playlists: {before_playlists:,} -> {len(playlists_df):,}")
 
     # Calculate trending
     track_growth_df, playlist_growth_df = calculate_trending(
@@ -255,14 +370,23 @@ def main():
     playlist_growth_df.to_csv(os.path.join(OUTPUT_DIR, 'playlist_growth_latest.csv'), index=False)
     print(f"  Saved: track_growth_latest.csv, playlist_growth_latest.csv")
 
+    # Save static data files
+    track_plays_df.to_csv(os.path.join(OUTPUT_DIR, 'track_plays_latest.csv'), index=False)
+    playlists_df.to_csv(os.path.join(OUTPUT_DIR, 'playlists_latest.csv'), index=False)
+    playlist_tracks_df.to_csv(os.path.join(OUTPUT_DIR, 'playlist_tracks_latest.csv'), index=False)
+    print(f"  Saved: track_plays_latest.csv, playlists_latest.csv, playlist_tracks_latest.csv")
+
     print("\n" + "=" * 60)
     print("EXTRACTION COMPLETE")
     print("=" * 60)
     print(f"\nSummary:")
-    print(f"  - Tracks with growth (>= {MIN_STREAMS:,} streams): {len(track_growth_df):,}")
+    print(f"  - Tracks with >= {MIN_GROWTH_PCT}% growth: {len(track_growth_df):,}")
     print(f"  - Trending tracks (top 10%): {track_growth_df['is_trending'].sum():,}")
     print(f"  - Playlists with growth: {len(playlist_growth_df):,}")
     print(f"  - Trending playlists (top 10%): {playlist_growth_df['is_trending'].sum():,}")
+    print(f"  - Track plays extracted: {len(track_plays_df):,}")
+    print(f"  - Playlists extracted: {len(playlists_df):,}")
+    print(f"  - Playlist-track relationships: {len(playlist_tracks_df):,}")
 
     # Show top growing tracks
     print(f"\nTop 5 fastest growing tracks (% growth/24h):")
