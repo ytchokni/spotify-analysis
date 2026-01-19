@@ -17,7 +17,7 @@ from datetime import datetime
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(SCRIPT_DIR, 'spotify.db')
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, 'analysis_results')
-MIN_STREAMS = 500000  # Minimum streams to be included
+MIN_STREAMS = 1000000  # Minimum streams to be included
 MIN_GROWTH_PCT = 3.0  # Minimum growth % per 24h to be included
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -324,30 +324,46 @@ def main():
     track_growth_df = extract_track_growth()
     playlist_growth_df = extract_playlist_growth()
 
-    # Get the set of track IDs that meet the growth threshold
-    growing_track_ids = set(track_growth_df['track_id'])
-    print(f"\nFiltering other data to {len(growing_track_ids):,} growing tracks...")
+    # Load existing community mappings to get the track IDs we actually need
+    print("\nLoading existing community mappings to determine required tracks...")
+    from glob import glob
+
+    all_mapping_files = glob(os.path.join(OUTPUT_DIR, 'track_community_mapping_all_*.csv'))
+    trending_mapping_files = glob(os.path.join(OUTPUT_DIR, 'track_community_mapping_trending_*.csv'))
+
+    community_track_ids = set()
+
+    if all_mapping_files:
+        all_mapping = pd.read_csv(max(all_mapping_files, key=os.path.getmtime))
+        community_track_ids.update(all_mapping['track_id'])
+        print(f"  Found {len(all_mapping):,} tracks in 'all songs' analysis")
+
+    if trending_mapping_files:
+        trending_mapping = pd.read_csv(max(trending_mapping_files, key=os.path.getmtime))
+        community_track_ids.update(trending_mapping['track_id'])
+        print(f"  Found {len(trending_mapping):,} tracks in 'trending' analysis")
+
+    if community_track_ids:
+        print(f"  Total unique tracks in community analyses: {len(community_track_ids):,}")
+    else:
+        print("  WARNING: No community mapping files found. Falling back to growth data only.")
+        community_track_ids = set(track_growth_df['track_id'])
 
     # Extract static data for webapp (no DB connection needed at runtime)
+    print("\nExtracting full data from database...")
     track_plays_df = extract_track_plays()
     playlists_df = extract_playlists()
     playlist_tracks_df = extract_playlist_tracks()
 
-    # Filter track_plays to only include growing tracks
+    # Filter to only tracks in community analyses
+    print(f"\nFiltering to tracks in community analyses ({len(community_track_ids):,} tracks)...")
     before_plays = len(track_plays_df)
-    track_plays_df = track_plays_df[track_plays_df['track_id'].isin(growing_track_ids)]
-    print(f"  Track plays: {before_plays:,} -> {len(track_plays_df):,}")
+    track_plays_df = track_plays_df[track_plays_df['track_id'].isin(community_track_ids)]
+    print(f"  Track plays: {before_plays:,} -> {len(track_plays_df):,} ({len(track_plays_df)/before_plays*100:.1f}%)")
 
-    # Filter playlist_tracks to only include growing tracks
     before_pt = len(playlist_tracks_df)
-    playlist_tracks_df = playlist_tracks_df[playlist_tracks_df['track_id'].isin(growing_track_ids)]
-    print(f"  Playlist-tracks: {before_pt:,} -> {len(playlist_tracks_df):,}")
-
-    # Filter playlists to only those containing growing tracks
-    playlists_with_growing = set(playlist_tracks_df['playlist_id'])
-    before_playlists = len(playlists_df)
-    playlists_df = playlists_df[playlists_df['playlist_id'].isin(playlists_with_growing)]
-    print(f"  Playlists: {before_playlists:,} -> {len(playlists_df):,}")
+    playlist_tracks_df = playlist_tracks_df[playlist_tracks_df['track_id'].isin(community_track_ids)]
+    print(f"  Playlist-tracks: {before_pt:,} -> {len(playlist_tracks_df):,} ({len(playlist_tracks_df)/before_pt*100:.1f}%)")
 
     # Calculate trending
     track_growth_df, playlist_growth_df = calculate_trending(
@@ -384,9 +400,9 @@ def main():
     print(f"  - Trending tracks (top 10%): {track_growth_df['is_trending'].sum():,}")
     print(f"  - Playlists with growth: {len(playlist_growth_df):,}")
     print(f"  - Trending playlists (top 10%): {playlist_growth_df['is_trending'].sum():,}")
-    print(f"  - Track plays extracted: {len(track_plays_df):,}")
+    print(f"  - Track plays extracted (community tracks): {len(track_plays_df):,}")
     print(f"  - Playlists extracted: {len(playlists_df):,}")
-    print(f"  - Playlist-track relationships: {len(playlist_tracks_df):,}")
+    print(f"  - Playlist-track relationships (community tracks): {len(playlist_tracks_df):,}")
 
     # Show top growing tracks
     print(f"\nTop 5 fastest growing tracks (% growth/24h):")
